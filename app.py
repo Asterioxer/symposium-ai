@@ -8,7 +8,7 @@ from tkinter import messagebox
 from PIL import Image
 import customtkinter as ctk
 
-# Add torch lib to DLL directory on Windows so CTranslate2 can load CUDA cublas DLLs
+# Ensure CUDA and cuBLAS DLLs from torch are discoverable on Windows
 try:
     import torch
     torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
@@ -18,9 +18,9 @@ try:
 except Exception:
     pass
 
-from audio_recorder import AudioRecorder
 from stt_engine import SpeechToTextEngine
 from llm_engine import LLMEngine
+from live_transcriber import LiveTranscriber
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -31,10 +31,9 @@ class SymposiumApp(ctk.CTk):
         super().__init__()
 
         self.title("Symposium AI")
-        self.geometry("940x820")
-        self.minsize(800, 680)
+        self.geometry("1080x720")
+        self.minsize(920, 600)
 
-        # Set taskbar icon if available
         icon_path = os.path.join(os.path.dirname(__file__), "assets", "icon.ico")
         if os.path.exists(icon_path):
             try:
@@ -42,156 +41,111 @@ class SymposiumApp(ctk.CTk):
             except Exception:
                 pass
 
-        self.audio_recorder = AudioRecorder(sample_rate=16000)
-        self.llm_engine = LLMEngine()
         self.stt_engine = None
+        self.llm_engine = LLMEngine()
+        self.live_transcriber = None
 
-        self.is_recording = False
-        self.is_transcribing = False
+        self.is_listening = False
         self.is_generating = False
         self.llm_stop_event = threading.Event()
-        self.record_start_time = 0.0
 
-        # Queue for thread-safe UI updates
+        # Transcript text state
+        self.finalized_transcript = ""
+        self.interim_transcript = ""
+
+        # UI event queue
         self.ui_queue = queue.Queue()
 
+        self._load_icons()
         self._build_ui()
 
-        # Start UI queue polling and mic level updates
+        # Polling loops
         self.after(30, self._process_ui_queue)
-        self.after(50, self._update_audio_meter)
+        self.after(50, self._update_mic_meter)
 
-        # Initialize Whisper and Ollama in a background thread to keep startup snappy
+        # Background initialization
         threading.Thread(target=self._init_background_services, daemon=True).start()
 
         self.protocol("WM_DELETE_WINDOW", self._on_closing)
 
-    def _build_ui(self):
-        self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(2, weight=1)
-        self.grid_rowconfigure(4, weight=2)
+    def _load_icons(self):
+        assets_dir = os.path.join(os.path.dirname(__file__), "assets")
+        self.logo_ctk = None
+        self.mic_idle_ctk = None
+        self.mic_active_ctk = None
 
-        # Header
-        header_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#141824", border_width=1, border_color="#1e293b")
-        header_frame.grid(row=0, column=0, padx=20, pady=(15, 10), sticky="ew")
-        header_frame.grid_columnconfigure(1, weight=1)
-
-        brand_frame = ctk.CTkFrame(header_frame, fg_color="transparent")
-        brand_frame.grid(row=0, column=0, padx=16, pady=12, sticky="w")
-
-        logo_png = os.path.join(os.path.dirname(__file__), "assets", "icon.png")
-        if os.path.exists(logo_png):
+        logo_path = os.path.join(assets_dir, "icon.png")
+        if os.path.exists(logo_path):
             try:
-                pil_img = Image.open(logo_png)
-                self.logo_ctk = ctk.CTkImage(light_image=pil_img, dark_image=pil_img, size=(36, 36))
-                logo_label = ctk.CTkLabel(brand_frame, image=self.logo_ctk, text="")
-                logo_label.pack(side="left", padx=(0, 10))
+                img = Image.open(logo_path)
+                self.logo_ctk = ctk.CTkImage(light_image=img, dark_image=img, size=(32, 32))
             except Exception:
                 pass
 
-        text_block = ctk.CTkFrame(brand_frame, fg_color="transparent")
-        text_block.pack(side="left")
+        idle_path = os.path.join(assets_dir, "mic_idle.png")
+        if os.path.exists(idle_path):
+            try:
+                img = Image.open(idle_path)
+                self.mic_idle_ctk = ctk.CTkImage(light_image=img, dark_image=img, size=(28, 28))
+            except Exception:
+                pass
 
-        title_label = ctk.CTkLabel(
-            text_block,
-            text="Symposium AI",
-            font=ctk.CTkFont(size=20, weight="bold"),
-            text_color="#38bdf8",
-        )
-        title_label.pack(anchor="w")
+        active_path = os.path.join(assets_dir, "mic_active.png")
+        if os.path.exists(active_path):
+            try:
+                img = Image.open(active_path)
+                self.mic_active_ctk = ctk.CTkImage(light_image=img, dark_image=img, size=(28, 28))
+            except Exception:
+                pass
 
-        subtitle_label = ctk.CTkLabel(
-            text_block,
-            text="Local Voice Assistant",
-            font=ctk.CTkFont(size=11),
-            text_color="#64748b",
-        )
-        subtitle_label.pack(anchor="w")
+    def _build_ui(self):
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(1, weight=1)  # Side-by-side main area
 
-        self.status_pill = ctk.CTkLabel(
-            header_frame,
-            text="Initializing...",
-            font=ctk.CTkFont(size=12, weight="bold"),
-            fg_color="#1e2535",
-            text_color="#f59e0b",
-            corner_radius=14,
-            padx=12,
-            pady=5,
-        )
-        self.status_pill.grid(row=0, column=2, padx=16, pady=12, sticky="e")
+        # -------------------------------------------------------------
+        # 1. Top Bar
+        # -------------------------------------------------------------
+        top_bar = ctk.CTkFrame(self, height=54, corner_radius=8, fg_color="#141824", border_width=1, border_color="#1e293b")
+        top_bar.grid(row=0, column=0, padx=16, pady=(12, 8), sticky="ew")
+        top_bar.grid_columnconfigure(1, weight=1)
 
-        # Controls & settings
-        control_card = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a202c", border_width=1, border_color="#2d3748")
-        control_card.grid(row=1, column=0, padx=20, pady=5, sticky="ew")
-        control_card.grid_columnconfigure(3, weight=1)
+        brand_frame = ctk.CTkFrame(top_bar, fg_color="transparent")
+        brand_frame.grid(row=0, column=0, padx=14, pady=8, sticky="w")
 
-        self.start_btn = ctk.CTkButton(
-            control_card,
-            text="Start Recording",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#059669",
-            hover_color="#10b981",
-            text_color="white",
-            height=38,
-            width=150,
-            corner_radius=6,
-            command=self.on_start_recording,
-        )
-        self.start_btn.grid(row=0, column=0, padx=(15, 8), pady=12)
-
-        self.stop_btn = ctk.CTkButton(
-            control_card,
-            text="Stop Recording",
-            font=ctk.CTkFont(size=13, weight="bold"),
-            fg_color="#dc2626",
-            hover_color="#ef4444",
-            text_color="white",
-            height=38,
-            width=150,
-            corner_radius=6,
-            state="disabled",
-            command=self.on_stop_recording,
-        )
-        self.stop_btn.grid(row=0, column=1, padx=8, pady=12)
-
-        meter_container = ctk.CTkFrame(control_card, fg_color="transparent")
-        meter_container.grid(row=0, column=2, padx=15, pady=12, sticky="w")
-
-        self.meter_label = ctk.CTkLabel(
-            meter_container,
-            text="Mic Level:",
-            font=ctk.CTkFont(size=12),
-            text_color="#94a3b8",
-        )
-        self.meter_label.pack(side="left", padx=(0, 8))
-
-        self.audio_meter = ctk.CTkProgressBar(
-            meter_container,
-            width=120,
-            height=10,
-            corner_radius=5,
-            progress_color="#10b981",
-            fg_color="#334155",
-        )
-        self.audio_meter.set(0.0)
-        self.audio_meter.pack(side="left")
-
-        # Model selection
-        model_container = ctk.CTkFrame(control_card, fg_color="transparent")
-        model_container.grid(row=0, column=3, padx=15, pady=12, sticky="e")
+        if self.logo_ctk:
+            logo_lbl = ctk.CTkLabel(brand_frame, image=self.logo_ctk, text="")
+            logo_lbl.pack(side="left", padx=(0, 8))
 
         ctk.CTkLabel(
-            model_container,
+            brand_frame,
+            text="Symposium AI",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            text_color="#38bdf8",
+        ).pack(side="left")
+
+        ctk.CTkLabel(
+            brand_frame,
+            text="Live Copilot",
+            font=ctk.CTkFont(size=11),
+            text_color="#64748b",
+        ).pack(side="left", padx=(8, 0))
+
+        # Model selector & Status
+        top_right = ctk.CTkFrame(top_bar, fg_color="transparent")
+        top_right.grid(row=0, column=2, padx=14, pady=8, sticky="e")
+
+        ctk.CTkLabel(
+            top_right,
             text="Model:",
             font=ctk.CTkFont(size=12),
             text_color="#94a3b8",
         ).pack(side="left", padx=(0, 6))
 
         self.model_dropdown = ctk.CTkOptionMenu(
-            model_container,
+            top_right,
             values=["Discovering models..."],
-            width=230,
-            height=32,
+            width=210,
+            height=28,
             corner_radius=6,
             fg_color="#334155",
             button_color="#475569",
@@ -199,59 +153,83 @@ class SymposiumApp(ctk.CTk):
         self.model_dropdown.pack(side="left", padx=(0, 6))
 
         refresh_btn = ctk.CTkButton(
-            model_container,
+            top_right,
             text="Refresh",
-            width=65,
-            height=32,
+            width=58,
+            height=28,
             corner_radius=6,
             fg_color="#334155",
             hover_color="#475569",
             command=self._refresh_models,
         )
-        refresh_btn.pack(side="left")
+        refresh_btn.pack(side="left", padx=(0, 12))
 
-        # Question area
-        q_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a202c", border_width=1, border_color="#2d3748")
-        q_frame.grid(row=2, column=0, padx=20, pady=8, sticky="nsew")
-        q_frame.grid_columnconfigure(0, weight=1)
-        q_frame.grid_rowconfigure(1, weight=1)
+        self.status_pill = ctk.CTkLabel(
+            top_right,
+            text="Initializing...",
+            font=ctk.CTkFont(size=11, weight="bold"),
+            fg_color="#1e2535",
+            text_color="#f59e0b",
+            corner_radius=12,
+            padx=10,
+            pady=4,
+        )
+        self.status_pill.pack(side="left")
 
-        q_header = ctk.CTkFrame(q_frame, fg_color="transparent")
-        q_header.grid(row=0, column=0, padx=15, pady=(10, 4), sticky="ew")
-        q_header.grid_columnconfigure(0, weight=1)
+        # -------------------------------------------------------------
+        # 2. Side-by-Side Main Container
+        # -------------------------------------------------------------
+        main_split = ctk.CTkFrame(self, fg_color="transparent")
+        main_split.grid(row=1, column=0, padx=16, pady=4, sticky="nsew")
+        main_split.grid_columnconfigure(0, weight=1)  # Left: Voice Transcription
+        main_split.grid_columnconfigure(1, weight=1)  # Right: AI Answer
+        main_split.grid_rowconfigure(0, weight=1)
+
+        # ---------------- Left Panel: Voice Transcription ----------------
+        left_panel = ctk.CTkFrame(main_split, corner_radius=10, fg_color="#1a202c", border_width=1, border_color="#2d3748")
+        left_panel.grid(row=0, column=0, padx=(0, 6), sticky="nsew")
+        left_panel.grid_columnconfigure(0, weight=1)
+        left_panel.grid_rowconfigure(1, weight=1)
+
+        # Left Header
+        left_header = ctk.CTkFrame(left_panel, fg_color="transparent")
+        left_header.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        left_header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            q_header,
-            text="Transcribed Question",
+            left_header,
+            text="Voice Transcription (Live)",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#e2e8f0",
         ).grid(row=0, column=0, sticky="w")
 
         sample_btn = ctk.CTkButton(
-            q_header,
-            text="Try Sample Question",
+            left_header,
+            text="Try Sample",
             font=ctk.CTkFont(size=11),
-            height=26,
+            height=24,
+            width=75,
             fg_color="#334155",
             hover_color="#475569",
             command=self._insert_sample_question,
         )
-        sample_btn.grid(row=0, column=1, padx=(0, 8), sticky="e")
+        sample_btn.grid(row=0, column=1, padx=(0, 6), sticky="e")
 
         clear_q_btn = ctk.CTkButton(
-            q_header,
+            left_header,
             text="Clear",
             font=ctk.CTkFont(size=11),
-            width=50,
-            height=26,
+            height=24,
+            width=46,
             fg_color="#334155",
             hover_color="#475569",
-            command=lambda: self.question_box.delete("1.0", "end"),
+            command=self._clear_transcription,
         )
         clear_q_btn.grid(row=0, column=2, sticky="e")
 
-        self.question_box = ctk.CTkTextbox(
-            q_frame,
+        # Left Transcription Text Area
+        self.transcription_box = ctk.CTkTextbox(
+            left_panel,
             font=ctk.CTkFont(size=13),
             wrap="word",
             corner_radius=6,
@@ -260,89 +238,115 @@ class SymposiumApp(ctk.CTk):
             border_width=1,
             border_color="#334155",
         )
-        self.question_box.grid(row=1, column=0, padx=15, pady=(0, 12), sticky="nsew")
-        self.question_box.insert(
-            "1.0",
-            "Click Start Recording and speak into your microphone, or type a question here directly.",
+        self.transcription_box.grid(row=1, column=0, padx=14, pady=(0, 8), sticky="nsew")
+
+        # Configure tags for italic-to-normal animation
+        self.transcription_box._textbox.tag_configure("final", font=("Segoe UI", 12, "normal"), foreground="#f8fafc")
+        self.transcription_box._textbox.tag_configure("interim", font=("Segoe UI", 12, "italic"), foreground="#38bdf8")
+
+        self.transcription_box.insert("1.0", "Click the microphone button below to start live voice transcription.")
+
+        # Left Bottom Controls (Voice Box & Send)
+        left_controls = ctk.CTkFrame(left_panel, fg_color="transparent")
+        left_controls.grid(row=2, column=0, padx=14, pady=(0, 12), sticky="ew")
+        left_controls.grid_columnconfigure(2, weight=1)
+
+        # Voice Box Button (small circular toggle icon)
+        self.voice_btn = ctk.CTkButton(
+            left_controls,
+            text="",
+            image=self.mic_idle_ctk,
+            width=42,
+            height=42,
+            corner_radius=21,
+            fg_color="#334155",
+            hover_color="#475569",
+            command=self.toggle_voice_listening,
         )
+        self.voice_btn.grid(row=0, column=0, padx=(0, 10))
 
-        # Action bar
-        action_bar = ctk.CTkFrame(self, fg_color="transparent")
-        action_bar.grid(row=3, column=0, padx=20, pady=4, sticky="ew")
-        action_bar.grid_columnconfigure(0, weight=1)
+        # Mic state label & level meter
+        mic_info = ctk.CTkFrame(left_controls, fg_color="transparent")
+        mic_info.grid(row=0, column=1, sticky="w")
 
-        action_inner = ctk.CTkFrame(action_bar, fg_color="transparent")
-        action_inner.grid(row=0, column=0)
+        self.mic_state_lbl = ctk.CTkLabel(
+            mic_info,
+            text="Mic: Idle (Click to speak)",
+            font=ctk.CTkFont(size=11),
+            text_color="#94a3b8",
+        )
+        self.mic_state_lbl.pack(anchor="w")
 
-        self.suggest_btn = ctk.CTkButton(
-            action_inner,
+        self.audio_meter = ctk.CTkProgressBar(
+            mic_info,
+            width=130,
+            height=8,
+            corner_radius=4,
+            progress_color="#10b981",
+            fg_color="#334155",
+        )
+        self.audio_meter.set(0.0)
+        self.audio_meter.pack(anchor="w", pady=(2, 0))
+
+        # Send / Suggest Answer Button
+        self.send_btn = ctk.CTkButton(
+            left_controls,
             text="Suggest Answer",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            font=ctk.CTkFont(size=13, weight="bold"),
             fg_color="#2563eb",
             hover_color="#3b82f6",
-            height=40,
-            width=180,
+            height=38,
+            width=140,
             corner_radius=6,
             command=self.on_suggest_answer,
         )
-        self.suggest_btn.pack(side="left", padx=8)
+        self.send_btn.grid(row=0, column=3, sticky="e")
 
-        self.cancel_gen_btn = ctk.CTkButton(
-            action_inner,
-            text="Stop Generating",
-            font=ctk.CTkFont(size=12),
-            fg_color="#475569",
-            hover_color="#64748b",
-            height=40,
-            width=130,
-            corner_radius=6,
-            state="disabled",
-            command=self.on_stop_generating,
-        )
-        self.cancel_gen_btn.pack(side="left", padx=8)
+        # ---------------- Right Panel: AI Answer ----------------
+        right_panel = ctk.CTkFrame(main_split, corner_radius=10, fg_color="#1a202c", border_width=1, border_color="#2d3748")
+        right_panel.grid(row=0, column=1, padx=(6, 0), sticky="nsew")
+        right_panel.grid_columnconfigure(0, weight=1)
+        right_panel.grid_rowconfigure(1, weight=1)
 
-        # Answer area
-        a_frame = ctk.CTkFrame(self, corner_radius=10, fg_color="#1a202c", border_width=1, border_color="#2d3748")
-        a_frame.grid(row=4, column=0, padx=20, pady=8, sticky="nsew")
-        a_frame.grid_columnconfigure(0, weight=1)
-        a_frame.grid_rowconfigure(1, weight=1)
-
-        a_header = ctk.CTkFrame(a_frame, fg_color="transparent")
-        a_header.grid(row=0, column=0, padx=15, pady=(10, 4), sticky="ew")
-        a_header.grid_columnconfigure(0, weight=1)
+        # Right Header
+        right_header = ctk.CTkFrame(right_panel, fg_color="transparent")
+        right_header.grid(row=0, column=0, padx=14, pady=(10, 4), sticky="ew")
+        right_header.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
-            a_header,
-            text="Suggested Answer",
+            right_header,
+            text="AI Suggested Answer (Streaming)",
             font=ctk.CTkFont(size=13, weight="bold"),
             text_color="#38bdf8",
         ).grid(row=0, column=0, sticky="w")
 
         copy_btn = ctk.CTkButton(
-            a_header,
-            text="Copy Answer",
+            right_header,
+            text="Copy",
             font=ctk.CTkFont(size=11),
-            height=26,
+            height=24,
+            width=50,
             fg_color="#334155",
             hover_color="#475569",
-            command=self._copy_answer_to_clipboard,
+            command=self._copy_answer,
         )
-        copy_btn.grid(row=0, column=1, padx=(0, 8), sticky="e")
+        copy_btn.grid(row=0, column=1, padx=(0, 6), sticky="e")
 
         clear_a_btn = ctk.CTkButton(
-            a_header,
+            right_header,
             text="Clear",
             font=ctk.CTkFont(size=11),
-            width=50,
-            height=26,
+            height=24,
+            width=46,
             fg_color="#334155",
             hover_color="#475569",
             command=lambda: self.answer_box.delete("1.0", "end"),
         )
         clear_a_btn.grid(row=0, column=2, sticky="e")
 
+        # Right Answer Text Area
         self.answer_box = ctk.CTkTextbox(
-            a_frame,
+            right_panel,
             font=ctk.CTkFont(size=13),
             wrap="word",
             corner_radius=6,
@@ -351,21 +355,41 @@ class SymposiumApp(ctk.CTk):
             border_width=1,
             border_color="#334155",
         )
-        self.answer_box.grid(row=1, column=0, padx=15, pady=(0, 12), sticky="nsew")
-        self.answer_box.insert("1.0", "Suggested answer will appear here.")
+        self.answer_box.grid(row=1, column=0, padx=14, pady=(0, 8), sticky="nsew")
+        self.answer_box.insert("1.0", "Suggested answer will stream side-by-side here.")
 
-        # Footer
-        footer = ctk.CTkFrame(self, height=30, corner_radius=0, fg_color="#0f172a")
-        footer.grid(row=5, column=0, sticky="ew")
+        # Right Bottom Controls (Stop Generating)
+        right_controls = ctk.CTkFrame(right_panel, fg_color="transparent")
+        right_controls.grid(row=2, column=0, padx=14, pady=(0, 12), sticky="ew")
+
+        self.cancel_gen_btn = ctk.CTkButton(
+            right_controls,
+            text="Stop Generating",
+            font=ctk.CTkFont(size=12),
+            fg_color="#475569",
+            hover_color="#64748b",
+            height=38,
+            width=120,
+            corner_radius=6,
+            state="disabled",
+            command=self.on_stop_generating,
+        )
+        self.cancel_gen_btn.pack(side="right")
+
+        # -------------------------------------------------------------
+        # 3. Footer Bar
+        # -------------------------------------------------------------
+        footer = ctk.CTkFrame(self, height=28, corner_radius=0, fg_color="#0f172a")
+        footer.grid(row=2, column=0, sticky="ew")
         footer.grid_columnconfigure(1, weight=1)
 
         self.footer_stt_label = ctk.CTkLabel(
             footer,
-            text="STT: Initializing...",
+            text="STT: Initializing Whisper...",
             font=ctk.CTkFont(size=11),
             text_color="#64748b",
         )
-        self.footer_stt_label.grid(row=0, column=0, padx=15, pady=3, sticky="w")
+        self.footer_stt_label.grid(row=0, column=0, padx=16, pady=2, sticky="w")
 
         self.footer_llm_label = ctk.CTkLabel(
             footer,
@@ -373,12 +397,19 @@ class SymposiumApp(ctk.CTk):
             font=ctk.CTkFont(size=11),
             text_color="#64748b",
         )
-        self.footer_llm_label.grid(row=0, column=2, padx=15, pady=3, sticky="e")
+        self.footer_llm_label.grid(row=0, column=2, padx=16, pady=2, sticky="e")
 
+    # -----------------------------------------------------------------
+    # Background Initialization
+    # -----------------------------------------------------------------
     def _init_background_services(self):
         try:
-            self._set_status("Initializing STT...", "#f59e0b")
+            self._set_status("Loading STT...", "#f59e0b")
             self.stt_engine = SpeechToTextEngine(model_size="tiny.en", prefer_cuda=True)
+            self.live_transcriber = LiveTranscriber(
+                stt_engine=self.stt_engine,
+                event_queue=self.ui_queue,
+            )
             device_info = self.stt_engine.get_device_info()
             self.ui_queue.put(("footer_stt", device_info))
         except Exception as e:
@@ -403,60 +434,90 @@ class SymposiumApp(ctk.CTk):
 
         threading.Thread(target=fetch, daemon=True).start()
 
-    def on_start_recording(self):
-        if self.is_recording:
+    # -----------------------------------------------------------------
+    # Live Voice Toggle (ChatGPT / Claude style Voice Box)
+    # -----------------------------------------------------------------
+    def toggle_voice_listening(self):
+        if not self.live_transcriber:
+            messagebox.showwarning("STT Loading", "Whisper STT is still loading. Please wait a moment.")
             return
 
-        try:
-            self.audio_recorder.start()
-            self.is_recording = True
-            self.record_start_time = time.time()
+        if not self.is_listening:
+            # Start Live Voice Listening
+            self.is_listening = True
+            self.voice_btn.configure(
+                image=self.mic_active_ctk or self.mic_idle_ctk,
+                fg_color="#059669",
+                hover_color="#10b981",
+            )
+            self.mic_state_lbl.configure(text="Mic: Active (Listening live...)", text_color="#10b981")
+            self._set_status("Listening live...", "#10b981")
 
-            self.start_btn.configure(state="disabled")
-            self.stop_btn.configure(state="normal")
-            self.suggest_btn.configure(state="disabled")
+            # Clear starter placeholder text if present
+            current = self.transcription_box.get("1.0", "end").strip()
+            if "Click the microphone button" in current:
+                self.transcription_box.delete("1.0", "end")
+                self.finalized_transcript = ""
+                self.interim_transcript = ""
 
-            self.question_box.delete("1.0", "end")
-            self.question_box.insert("1.0", "Recording... Click Stop Recording when finished speaking.")
+            self.live_transcriber.start()
 
-            self._set_status("Recording...", "#ef4444")
-        except Exception as e:
-            self._set_status("Mic error", "#ef4444")
-            self.question_box.delete("1.0", "end")
-            self.question_box.insert("1.0", f"Microphone error: {e}")
+        else:
+            # Stop Live Voice Listening
+            self.is_listening = False
+            self.voice_btn.configure(
+                image=self.mic_idle_ctk,
+                fg_color="#334155",
+                hover_color="#475569",
+            )
+            self.mic_state_lbl.configure(text="Mic: Idle (Click to speak)", text_color="#94a3b8")
+            self.audio_meter.set(0.0)
+            self._set_status("Ready", "#10b981")
 
-    def on_stop_recording(self):
-        if not self.is_recording:
-            return
+            self.live_transcriber.stop()
 
-        self.is_recording = False
-        self.stop_btn.configure(state="disabled")
-        self.audio_meter.set(0.0)
+            # Finalize any pending interim text into normal font
+            if self.interim_transcript:
+                if self.finalized_transcript:
+                    self.finalized_transcript += " " + self.interim_transcript
+                else:
+                    self.finalized_transcript = self.interim_transcript
+                self.interim_transcript = ""
+                self._render_transcription()
 
-        duration = time.time() - self.record_start_time
-        self._set_status("Transcribing...", "#38bdf8")
-        self.question_box.delete("1.0", "end")
-        self.question_box.insert("1.0", f"Transcribing {duration:.1f}s of audio...")
+    # -----------------------------------------------------------------
+    # Live Italic-to-Normal Transcription Renderer
+    # -----------------------------------------------------------------
+    def _render_transcription(self):
+        """Renders finalized text in regular font and interim text in italic font."""
+        self.transcription_box.configure(state="normal")
+        self.transcription_box.delete("1.0", "end")
 
-        def run_stt():
-            try:
-                audio_data = self.audio_recorder.stop()
-                if self.stt_engine is None:
-                    time.sleep(1.0)
-                transcription = self.stt_engine.transcribe(audio_data) if self.stt_engine else ""
-                self.ui_queue.put(("transcription_done", (transcription, duration)))
-            except Exception as e:
-                self.ui_queue.put(("transcription_error", str(e)))
+        if self.finalized_transcript:
+            self.transcription_box._textbox.insert("end", self.finalized_transcript + " ", "final")
 
-        threading.Thread(target=run_stt, daemon=True).start()
+        if self.interim_transcript:
+            self.transcription_box._textbox.insert("end", self.interim_transcript, "interim")
 
+        self.transcription_box.see("end")
+
+    def _clear_transcription(self):
+        self.finalized_transcript = ""
+        self.interim_transcript = ""
+        self.transcription_box.delete("1.0", "end")
+
+    # -----------------------------------------------------------------
+    # AI Answer Streaming Handlers
+    # -----------------------------------------------------------------
     def on_suggest_answer(self):
-        question = self.question_box.get("1.0", "end").strip()
+        # Sync with any manual typing edits in textbox
+        full_text = self.transcription_box.get("1.0", "end").strip()
+        if "Click the microphone button" in full_text:
+            full_text = ""
 
-        # Handle empty or prompt placeholder text
-        if not question or "speak into your microphone" in question.lower() or "click start recording" in question.lower():
+        if not full_text:
             self._insert_sample_question()
-            question = self.question_box.get("1.0", "end").strip()
+            full_text = self.transcription_box.get("1.0", "end").strip()
 
         selected_model = self.model_dropdown.get()
         if not selected_model or "Discovering" in selected_model or "offline" in selected_model:
@@ -476,21 +537,20 @@ class SymposiumApp(ctk.CTk):
         self.is_generating = True
         self.llm_stop_event.clear()
 
-        self.suggest_btn.configure(state="disabled")
+        self.send_btn.configure(state="disabled")
         self.cancel_gen_btn.configure(state="normal")
-        self.start_btn.configure(state="disabled")
 
         self.answer_box.delete("1.0", "end")
         self._set_status("Generating...", "#a855f7")
 
-        def run_llm_stream():
+        def run_stream():
             start_time = time.time()
             is_thinking = False
             has_started_content = False
 
             try:
                 stream = self.llm_engine.stream_answer(
-                    question=question,
+                    question=full_text,
                     model=selected_model,
                     stop_event=self.llm_stop_event,
                 )
@@ -517,19 +577,44 @@ class SymposiumApp(ctk.CTk):
             except Exception as e:
                 self.ui_queue.put(("llm_error", str(e)))
 
-        threading.Thread(target=run_llm_stream, daemon=True).start()
+        threading.Thread(target=run_stream, daemon=True).start()
 
     def on_stop_generating(self):
         if self.is_generating:
             self.llm_stop_event.set()
             self._set_status("Stopped", "#f59e0b")
 
+    # -----------------------------------------------------------------
+    # UI Queue Processor
+    # -----------------------------------------------------------------
     def _process_ui_queue(self):
         try:
             while True:
                 msg_type, payload = self.ui_queue.get_nowait()
 
-                if msg_type == "llm_thinking_start":
+                # Live STT Events: Interim (Italics) vs Final (Regular)
+                if msg_type == "stt_interim":
+                    self.interim_transcript = payload
+                    self._render_transcription()
+                    self._set_status("Transcribing...", "#38bdf8")
+
+                elif msg_type == "stt_final":
+                    new_text = payload.strip()
+                    if new_text:
+                        if self.finalized_transcript:
+                            self.finalized_transcript += " " + new_text
+                        else:
+                            self.finalized_transcript = new_text
+                    self.interim_transcript = ""
+                    self._render_transcription()
+                    self._set_status("Listening live...", "#10b981")
+
+                elif msg_type == "stt_interim_clear":
+                    self.interim_transcript = ""
+                    self._render_transcription()
+
+                # LLM Events
+                elif msg_type == "llm_thinking_start":
                     self._set_status("Thinking...", "#f59e0b")
                     self.answer_box.insert("end", "[Thinking]\n")
                     self.answer_box.see("end")
@@ -549,44 +634,18 @@ class SymposiumApp(ctk.CTk):
 
                 elif msg_type == "llm_done":
                     self.is_generating = False
-                    self.suggest_btn.configure(state="normal")
+                    self.send_btn.configure(state="normal")
                     self.cancel_gen_btn.configure(state="disabled")
-                    self.start_btn.configure(state="normal")
                     self._set_status(f"Done ({payload:.1f}s)", "#10b981")
 
                 elif msg_type == "llm_error":
                     self.is_generating = False
-                    self.suggest_btn.configure(state="normal")
+                    self.send_btn.configure(state="normal")
                     self.cancel_gen_btn.configure(state="disabled")
-                    self.start_btn.configure(state="normal")
                     self.answer_box.insert("end", f"\nError: {payload}")
                     self._set_status("Error", "#ef4444")
 
-                elif msg_type == "transcription_done":
-                    transcription, duration = payload
-                    self.is_transcribing = False
-                    self.start_btn.configure(state="normal")
-                    self.suggest_btn.configure(state="normal")
-
-                    self.question_box.delete("1.0", "end")
-                    if transcription:
-                        self.question_box.insert("1.0", transcription)
-                        self._set_status(f"Transcribed ({duration:.1f}s)", "#10b981")
-                    else:
-                        self.question_box.insert(
-                            "1.0",
-                            "No speech detected. Please speak closer to the microphone or type here.",
-                        )
-                        self._set_status("No speech detected", "#f59e0b")
-
-                elif msg_type == "transcription_error":
-                    self.is_transcribing = False
-                    self.start_btn.configure(state="normal")
-                    self.suggest_btn.configure(state="normal")
-                    self.question_box.delete("1.0", "end")
-                    self.question_box.insert("1.0", f"Transcription error: {payload}")
-                    self._set_status("Transcription error", "#ef4444")
-
+                # System & Model Events
                 elif msg_type == "models_loaded":
                     models = payload
                     self.model_dropdown.configure(values=models)
@@ -601,6 +660,10 @@ class SymposiumApp(ctk.CTk):
                     self.model_dropdown.configure(values=["Ollama offline"])
                     self.model_dropdown.set("Ollama offline")
 
+                elif msg_type == "set_status":
+                    text, color = payload
+                    self.status_pill.configure(text=text, text_color=color)
+
                 elif msg_type == "footer_stt":
                     self.footer_stt_label.configure(text=f"STT: {payload}")
 
@@ -612,9 +675,9 @@ class SymposiumApp(ctk.CTk):
 
         self.after(30, self._process_ui_queue)
 
-    def _update_audio_meter(self):
-        if self.is_recording:
-            level = self.audio_recorder.get_level()
+    def _update_mic_meter(self):
+        if self.is_listening and self.live_transcriber:
+            level = self.live_transcriber.get_level()
             self.audio_meter.set(level)
             if level > 0.6:
                 self.audio_meter.configure(progress_color="#ef4444")
@@ -622,17 +685,26 @@ class SymposiumApp(ctk.CTk):
                 self.audio_meter.configure(progress_color="#10b981")
             else:
                 self.audio_meter.configure(progress_color="#38bdf8")
-        self.after(50, self._update_audio_meter)
+        else:
+            self.audio_meter.set(0.0)
+
+        self.after(50, self._update_mic_meter)
 
     def _set_status(self, text: str, color: str):
-        self.status_pill.configure(text=text, text_color=color)
+        if threading.current_thread() is threading.main_thread():
+            try:
+                self.status_pill.configure(text=text, text_color=color)
+            except Exception:
+                pass
+        else:
+            self.ui_queue.put(("set_status", (text, color)))
 
-    def _copy_answer_to_clipboard(self):
+    def _copy_answer(self):
         text = self.answer_box.get("1.0", "end").strip()
         if text:
             self.clipboard_clear()
             self.clipboard_append(text)
-            self._set_status("Copied to clipboard", "#38bdf8")
+            self._set_status("Copied", "#38bdf8")
             self.after(2000, lambda: self._set_status("Ready", "#10b981"))
 
     def _insert_sample_question(self):
@@ -645,18 +717,15 @@ class SymposiumApp(ctk.CTk):
         ]
         import random
         choice = random.choice(samples)
-        self.question_box.delete("1.0", "end")
-        self.question_box.insert("1.0", choice)
-        self.suggest_btn.configure(state="normal")
+        self.finalized_transcript = choice
+        self.interim_transcript = ""
+        self._render_transcription()
         self._set_status("Sample loaded", "#38bdf8")
 
     def _on_closing(self):
         self.llm_stop_event.set()
-        if self.is_recording:
-            try:
-                self.audio_recorder.stop()
-            except Exception:
-                pass
+        if self.live_transcriber:
+            self.live_transcriber.stop()
         self.quit()
         self.destroy()
 

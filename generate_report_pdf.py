@@ -217,6 +217,11 @@ def build_pdf(filename="Symposium_AI_Project_Report.pdf"):
             Paragraph("Captures microphone input at 16 kHz mono float32. Computes live RMS power levels for dynamic UI volume meters.", table_cell)
         ],
         [
+            Paragraph("Live Transcription", table_cell),
+            Paragraph("sounddevice + faster-whisper", table_cell),
+            Paragraph("Continuous 100ms streaming audio buffer with RMS-based VAD. Emits interim partial tokens (styled in italics) and final text upon conversational pauses.", table_cell)
+        ],
+        [
             Paragraph("Speech-to-Text", table_cell),
             Paragraph("faster-whisper (CTranslate2)", table_cell),
             Paragraph("Performs in-memory transcription directly from float32 NumPy arrays on NVIDIA CUDA (float16) with automatic CPU int8 fallback.", table_cell)
@@ -350,8 +355,8 @@ def build_pdf(filename="Symposium_AI_Project_Report.pdf"):
 
     file_data = [
         [Paragraph("Filename", table_header), Paragraph("Lines", table_header), Paragraph("Description", table_header)],
-        [Paragraph("app.py", table_cell), Paragraph("~520", table_cell), Paragraph("Main CustomTkinter desktop UI, thread-safe queue controller, and state manager.", table_cell)],
-        [Paragraph("audio_recorder.py", table_cell), Paragraph("~80", table_cell), Paragraph("Non-blocking microphone stream using sounddevice with real-time RMS meter.", table_cell)],
+        [Paragraph("app.py", table_cell), Paragraph("~720", table_cell), Paragraph("Side-by-side desktop UI, Tkinter tag renderer (italic interim to normal text), and event queue.", table_cell)],
+        [Paragraph("live_transcriber.py", table_cell), Paragraph("~170", table_cell), Paragraph("Continuous microphone capture, sliding-window RMS VAD, and real-time interim STT.", table_cell)],
         [Paragraph("stt_engine.py", table_cell), Paragraph("~120", table_cell), Paragraph("Whisper STT wrapper with DLL discovery, gain scaling, and two-pass VAD.", table_cell)],
         [Paragraph("llm_engine.py", table_cell), Paragraph("~110", table_cell), Paragraph("Ollama streaming client with model sorting and reasoning token separation.", table_cell)],
         [Paragraph("test_pipeline.py", table_cell), Paragraph("~50", table_cell), Paragraph("Automated non-GUI test script validating audio, STT, and LLM streaming.", table_cell)],
