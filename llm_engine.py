@@ -1,9 +1,3 @@
-"""
-Local LLM Engine for Parakeet AI Prototype.
-Communicates with local Ollama runtime to provide real-time token streaming.
-Supports both direct-response models and reasoning models (thinking tokens).
-"""
-
 import threading
 from typing import List, Generator, Optional, Tuple
 import ollama
@@ -15,7 +9,6 @@ class LLMEngine:
         self.client = ollama.Client(host=self.host)
 
     def is_available(self) -> bool:
-        """Checks if the local Ollama server is running and reachable."""
         try:
             self.client.list()
             return True
@@ -23,7 +16,6 @@ class LLMEngine:
             return False
 
     def get_available_models(self) -> List[str]:
-        """Returns a prioritized list of installed Ollama model names."""
         try:
             response = self.client.list()
             model_names = []
@@ -33,8 +25,8 @@ class LLMEngine:
                 if name:
                     model_names.append(name)
 
-            # Sort models: prioritize fast direct models (llama, mistral) first
-            def priority_key(name: str):
+            # Sort lightweight instruction models first for faster response times
+            def sort_key(name: str):
                 nl = name.lower()
                 if "llama3.2" in nl or "llama-3.2" in nl:
                     return 0
@@ -46,7 +38,7 @@ class LLMEngine:
                     return 3
                 return 4
 
-            model_names.sort(key=priority_key)
+            model_names.sort(key=sort_key)
             return model_names
         except Exception:
             return []
@@ -59,17 +51,10 @@ class LLMEngine:
         stop_event: Optional[threading.Event] = None,
         num_ctx: int = 2048,
     ) -> Generator[Tuple[str, str], None, None]:
-        """
-        Streams answer tokens from local Ollama for the given question.
-        Yields tuples of (token_type, token_text), where token_type is:
-          - 'content': standard response token
-          - 'thinking': internal reasoning token (for thinking models)
-        """
         if not system_prompt:
             system_prompt = (
-                "You are Symposium AI, an intelligent real-time voice copilot for meetings, interviews, "
-                "and technical discussions. Provide direct, concise, articulate, and well-structured answers "
-                "to the user's question. Get straight to the point."
+                "You are an assistant for live meetings, interviews, and technical discussions. "
+                "Provide direct, concise, and structured answers to the user's question."
             )
 
         messages = [
@@ -93,7 +78,6 @@ class LLMEngine:
                 if msg is None and isinstance(chunk, dict):
                     msg = chunk.get("message", {})
 
-                # Extract content
                 content = (
                     msg.get("content", "")
                     if isinstance(msg, dict)
@@ -102,7 +86,6 @@ class LLMEngine:
                 if content:
                     yield ("content", content)
 
-                # Extract thinking tokens if model is a reasoning model
                 thinking = (
                     msg.get("thinking", "")
                     if isinstance(msg, dict)
@@ -112,17 +95,16 @@ class LLMEngine:
                     yield ("thinking", thinking)
 
         except Exception as e:
-            yield ("content", f"\n[Error communicating with local Ollama: {e}]")
+            yield ("content", f"\nError connecting to Ollama: {e}")
 
 
 if __name__ == "__main__":
-    print("Testing LLMEngine...")
     engine = LLMEngine()
     models = engine.get_available_models()
-    print("Sorted models:", models)
+    print("Available models:", models)
     if models:
-        top_model = models[0]
-        print(f"Top model: {top_model}")
-        for kind, text in engine.stream_answer("What is 1+1? Answer in one word.", model=top_model):
-            print(f"[{kind}] {text}", end="", flush=True)
-        print("\nTest finished!")
+        choice = models[0]
+        print(f"Testing stream with {choice}...")
+        for kind, token in engine.stream_answer("What is 2+2? Answer in one word.", model=choice):
+            print(token, end="", flush=True)
+        print()

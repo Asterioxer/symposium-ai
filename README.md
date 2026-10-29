@@ -1,72 +1,75 @@
-# Symposium AI - Real-Time Voice Intelligence Copilot
+# Symposium AI
 
-A private, high-performance Windows desktop application designed for live meetings, interviews, and intellectual discourse. Built from the ground up to operate **100% locally** on your machine with low latency, local Speech-to-Text (STT), and progressive streaming AI answer generation.
+Symposium AI is a lightweight desktop assistant for Windows that captures microphone audio, transcribes it locally using Whisper, and generates suggested answers in real time using a local Ollama model.
 
----
+All speech recognition and LLM inference run entirely offline on your machine.
 
-## ✨ Features
+## Features
 
-- **🎙️ Real-Time Audio Capture**: Microphone capture with responsive live volume metering.
-- **⚡ 100% Local Speech-to-Text**: Powered by `faster-whisper` (`tiny.en` / `base.en`) with automatic NVIDIA CUDA acceleration and CPU fallback.
-- **💬 Progressive Streaming LLM Answers**: Real-time token-by-token streaming via local **Ollama** (`dolphinlabs/llama3.2-3b-uncensored`, `qwen3.5:4b`, etc.).
-- **🎨 Modern Dark Windows UI**: Built with `CustomTkinter` and `Pillow`, featuring a branded soundwave-nexus emblem, dark-mode styling, and status indicators.
-- **🛡️ Asynchronous & Thread-Safe**: Background worker threads ensure the desktop interface stays responsive during recording, transcription, and answer generation.
-- **💡 Sample Prompts & Clipboard Integration**: Quick test buttons and one-click answer copying.
+- Local microphone capture with a live volume meter.
+- Local speech-to-text using `faster-whisper` (runs on CUDA with automatic CPU fallback).
+- Progressive token streaming from local Ollama models.
+- Automatic model detection from your local Ollama installation.
+- Clean desktop interface built with CustomTkinter.
+- Editable transcription box and one-click answer copying.
 
----
-
-## 📁 Project Structure
+## Project Structure
 
 ```
-PK_Lacritz/
+.
 ├── assets/
-│   ├── icon.png          # High-resolution application logo
-│   └── icon.ico          # Windows multi-size taskbar & titlebar icon
-├── app.py                # Main desktop application & CustomTkinter GUI
-├── audio_recorder.py     # Audio capture module with live RMS level meter
-├── stt_engine.py         # Local faster-whisper STT engine (CUDA / CPU)
-├── llm_engine.py         # Local Ollama client with token streaming generator
-├── create_logo.py        # Brand logo generator script
+│   ├── icon.png          # App icon
+│   └── icon.ico          # Windows icon
+├── app.py                # Main application UI and controller
+├── audio_recorder.py     # Microphone recording via sounddevice
+├── stt_engine.py         # Whisper STT wrapper
+├── llm_engine.py         # Ollama streaming client
 ├── requirements.txt      # Python dependencies
-├── run.bat               # Windows 1-click batch launcher
+├── run.bat               # Windows batch launcher
 ├── run.ps1               # PowerShell launcher
-├── test_pipeline.py      # Automated self-test script
-└── README.md             # Documentation
+└── test_pipeline.py      # Environment and pipeline test script
 ```
 
----
+## Requirements
 
-## 🚀 Quick Start
+- Windows 10/11
+- Python 3.10+
+- [Ollama](https://ollama.com) running locally (`http://localhost:11434`)
+- At least one model pulled in Ollama (e.g. `llama3.2:3b` or `qwen3.5:4b`):
 
-### 1. Prerequisites
+```bash
+ollama pull dolphinlabs/llama3.2-3b-uncensored
+```
 
-1. **Python 3.10+** (tested on Python 3.12 with CUDA).
-2. **Ollama**: Download from [ollama.com](https://ollama.com).
-3. Ensure at least one model is pulled in Ollama (e.g. `llama3.2:3b`):
-   ```powershell
-   ollama pull dolphinlabs/llama3.2-3b-uncensored
-   ```
+## Setup
 
-### 2. Launch the Application
+1. Install the required Python packages:
 
-Double-click [`run.bat`](file:///c:/Users/soham/Desktop/PK_Lacritz/run.bat) or run in PowerShell:
+```bash
+pip install -r requirements.txt
+```
 
-```powershell
+2. Make sure Ollama is running:
+
+```bash
+ollama list
+```
+
+## Running the App
+
+Launch via Python:
+
+```bash
 python app.py
 ```
 
----
+Or double-click `run.bat`.
 
-## 📖 How to Use
+## Usage
 
-1. **Record Audio**:
-   - Click **Start Recording** and speak your question into your microphone.
-   - The **Mic Level** progress bar reflects incoming volume.
-2. **Stop & Transcribe**:
-   - Click **Stop Recording**.
-   - Local Whisper transcribes speech into the **Transcribed Question** box in sub-second time.
-   - *(Optional)* Edit or refine the text if needed.
-3. **Generate Answer**:
-   - Click **Suggest Answer**.
-   - Watch the answer stream progressively into the **AI Suggested Answer** box.
-   - Click **Copy Answer** to copy to clipboard.
+1. Click **Start Recording** and speak into your microphone.
+2. Click **Stop Recording**. The transcription will appear in the top text box within a second.
+3. Click **Suggest Answer**. The answer will stream into the bottom text box as it is generated.
+4. Click **Copy Answer** to copy the text to your clipboard.
+
+You can also type or paste any question directly into the top box, or click **Try Sample Question** to test answer generation immediately.

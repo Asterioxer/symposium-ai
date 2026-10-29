@@ -1,14 +1,9 @@
-"""
-Local Speech-to-Text (STT) Engine for Parakeet AI Prototype.
-Powered by faster-whisper with automatic GPU (CUDA) DLL discovery and CPU fallback.
-"""
-
 import os
 import sys
 import logging
 import numpy as np
 
-# Ensure Windows finds cuBLAS and CUDA DLLs from PyTorch / NVIDIA wheels
+# Add PyTorch's lib folder to DLL search path on Windows so CTranslate2 can load cuBLAS
 try:
     import torch
     torch_lib = os.path.join(os.path.dirname(torch.__file__), "lib")
@@ -33,65 +28,52 @@ class SpeechToTextEngine:
         self._load_model()
 
     def _load_model(self):
-        """Loads the faster-whisper model and verifies encode functionality."""
         dummy_audio = np.zeros(16000, dtype=np.float32)
 
         if self.prefer_cuda:
             try:
-                # Attempt to initialize and test encode on CUDA
+                # Test encode immediately to make sure cuBLAS DLLs are actually loadable
                 model_cuda = WhisperModel(self.model_size, device="cuda", compute_type="float16")
-                # Test encode immediately to verify cuBLAS DLL availability
                 segs, _ = model_cuda.transcribe(dummy_audio)
                 list(segs)
 
                 self.model = model_cuda
                 self.device = "cuda"
                 self.compute_type = "float16"
-                logger.info(f"Initialized {self.model_size} successfully on CUDA float16.")
                 return
             except Exception as e:
-                logger.warning(f"CUDA initialization or cuBLAS test failed ({e}). Falling back to CPU int8...")
+                logger.warning(f"CUDA failed ({e}), falling back to CPU.")
 
         # Fallback to CPU int8
         try:
             self.model = WhisperModel(self.model_size, device="cpu", compute_type="int8")
-            # Quick verification
             segs, _ = self.model.transcribe(dummy_audio)
             list(segs)
             self.device = "cpu"
             self.compute_type = "int8"
-            logger.info(f"Initialized {self.model_size} on CPU int8.")
         except Exception as e:
-            logger.error(f"Failed to load Whisper on CPU: {e}")
+            logger.error(f"Failed to load Whisper model: {e}")
             raise
 
     def get_device_info(self) -> str:
-        """Returns human-readable engine status string."""
-        dev_upper = self.device.upper()
-        return f"Whisper {self.model_size} ({dev_upper} - {self.compute_type})"
+        return f"Whisper {self.model_size} ({self.device.upper()} {self.compute_type})"
 
     def transcribe(self, audio: np.ndarray) -> str:
-        """
-        Transcribes a 1D float32 numpy audio array at 16000Hz.
-        Applies volume normalization and VAD with fallback.
-        """
         if self.model is None:
             raise RuntimeError("Whisper model is not initialized.")
 
-        if audio is None or len(audio) < 1600:  # Less than 0.1s
+        if audio is None or len(audio) < 1600:
             return ""
 
-        # Ensure float32
         audio = audio.astype(np.float32)
 
-        # Normalize audio volume: boost quiet microphone signals
+        # Normalize gain so low-volume laptop mics can be transcribed reliably
         max_amp = np.max(np.abs(audio))
         if max_amp > 1e-4:
-            # Scale audio so peak is around 0.85 (boost quiet voices without clipping)
             scale = min(100.0, 0.85 / max_amp)
             audio = audio * scale
 
-        # First pass: try with Voice Activity Detection (VAD)
+        # First pass with voice activity detection
         try:
             segments, _ = self.model.transcribe(
                 audio,
@@ -104,10 +86,10 @@ class SpeechToTextEngine:
             transcription = " ".join(texts).strip()
             if transcription:
                 return transcription
-        except Exception as e:
-            logger.warning(f"VAD transcription pass failed ({e}), falling back to direct pass...")
+        except Exception:
+            pass
 
-        # Second pass fallback: without VAD filter in case speech was quiet or soft
+        # Fallback pass without VAD if audio was quiet or filtered out
         try:
             segments, _ = self.model.transcribe(
                 audio,
@@ -118,12 +100,10 @@ class SpeechToTextEngine:
             texts = [s.text.strip() for s in segments if s.text.strip()]
             return " ".join(texts).strip()
         except Exception as e:
-            logger.error(f"Fallback transcription error: {e}")
+            logger.error(f"Transcription error: {e}")
             raise
 
 
 if __name__ == "__main__":
-    print("Testing upgraded SpeechToTextEngine...")
     engine = SpeechToTextEngine("tiny.en")
-    print("Device Info:", engine.get_device_info())
-    print("STT Engine initialized and verified successfully!")
+    print("STT Engine:", engine.get_device_info())

@@ -1,8 +1,3 @@
-"""
-Audio Recorder Module for Parakeet AI Prototype.
-Captures microphone audio using sounddevice and provides live audio level updates.
-"""
-
 import threading
 import numpy as np
 import sounddevice as sd
@@ -19,11 +14,9 @@ class AudioRecorder:
         self.current_level = 0.0
 
     def _audio_callback(self, indata, frames, time_info, status):
-        """Callback invoked by PortAudio for each incoming audio block."""
         if not self.is_recording:
             return
 
-        # Take channel 0 if multiple channels were captured
         if indata.ndim > 1:
             chunk = indata[:, 0].copy()
         else:
@@ -32,20 +25,17 @@ class AudioRecorder:
         with self._lock:
             self.audio_chunks.append(chunk)
 
-        # Compute Root Mean Square (RMS) for the volume meter
+        # Calculate volume level for the mic meter
         rms = float(np.sqrt(np.mean(chunk**2) + 1e-12))
-        # Responsive scaling for visual meter
         scaled_level = min(1.0, rms * 25.0)
         self.current_level = 0.25 * self.current_level + 0.75 * scaled_level
 
     def start(self):
-        """Starts recording audio from default input device."""
         with self._lock:
             self.audio_chunks.clear()
             self.is_recording = True
             self.current_level = 0.0
 
-        # Query default input device channels
         try:
             dev_info = sd.query_devices(kind="input")
             max_ch = dev_info.get("max_input_channels", 1)
@@ -63,7 +53,6 @@ class AudioRecorder:
         self.stream.start()
 
     def stop(self) -> np.ndarray:
-        """Stops recording and returns the concatenated 1D float32 numpy audio array."""
         self.is_recording = False
         self.current_level = 0.0
 
@@ -83,17 +72,13 @@ class AudioRecorder:
             return audio
 
     def get_level(self) -> float:
-        """Returns the current smoothed audio volume level (0.0 to 1.0)."""
         return self.current_level if self.is_recording else 0.0
 
 
 if __name__ == "__main__":
     import time
-    print("Testing AudioRecorder for 1 second...")
     recorder = AudioRecorder()
     recorder.start()
-    for _ in range(5):
-        time.sleep(0.2)
-        print(f"Level: {recorder.get_level():.4f}")
+    time.sleep(1)
     data = recorder.stop()
-    print(f"Recorded samples: {len(data)}, duration: {len(data)/16000:.2f}s")
+    print(f"Recorded {len(data)} samples ({len(data)/16000:.2f}s)")

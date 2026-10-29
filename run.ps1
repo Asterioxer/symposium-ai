@@ -1,3 +1,2 @@
-# PowerShell launcher for Symposium AI
-Write-Host "Starting Symposium AI - Real-Time Voice Intelligence Copilot..." -ForegroundColor Cyan
+# Launch script for Symposium AI
 python app.py
