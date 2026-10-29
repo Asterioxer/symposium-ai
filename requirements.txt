@@ -1,0 +1,6 @@
+# Parakeet AI Local Desktop Prototype Dependencies
+customtkinter>=6.0.0
+sounddevice>=0.5.0
+numpy>=1.26.0
+faster-whisper>=1.0.0
+ollama>=0.3.0
